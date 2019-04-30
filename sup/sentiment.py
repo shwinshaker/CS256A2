@@ -1,43 +1,6 @@
 #!/bin/python
 
-def read_files(tarfname):
-    """Read the training and development data from the sentiment tar file.
-    The returned object contains various fields that store sentiment data, such as:
-
-    train_data,dev_data: array of documents (array of words)
-    train_fnames,dev_fnames: list of filenames of the doccuments (same length as data)
-    train_labels,dev_labels: the true string label for each document (same length as data)
-
-    The data is also preprocessed for use with scikit-learn, as:
-
-    count_vec: CountVectorizer used to process the data (for reapplication on new data)
-    trainX,devX: array of vectors representing Bags of Words, i.e. documents processed through the vectorizer
-    le: LabelEncoder, i.e. a mapper from string labels to ints (stored for reapplication)
-    target_labels: List of labels (same order as used in le)
-    trainy,devy: array of int labels, one for each document
-    """
-    import tarfile
-    tar = tarfile.open(tarfname, "r:gz")
-    trainname = "train.tsv"
-    devname = "dev.tsv"
-    for member in tar.getmembers():
-        if 'train.tsv' in member.name:
-            trainname = member.name
-        elif 'dev.tsv' in member.name:
-            devname = member.name
-            
-            
-    class Data: pass
-    sentiment = Data()
-    print("-- train data")
-    sentiment.train_data, sentiment.train_labels = read_tsv(tar,trainname)
-    print(len(sentiment.train_data))
-
-    print("-- dev data")
-    sentiment.dev_data, sentiment.dev_labels = read_tsv(tar, devname)
-    print(len(sentiment.dev_data))
-    print("-- transforming data and labels")
-
+def lemmatize_spelling(dataX):
     """
     - Spelling correction
         Largest gain examples:
@@ -54,7 +17,7 @@ def read_files(tarfname):
         def __init__(self, max_edit_distance_dictionary=2, prefix_length=7):
             self.sym_spell = SymSpell(max_edit_distance_dictionary, prefix_length)
             # load dictionary
-            dictionary_path = os.path.join(os.path.dirname('../'),
+            dictionary_path = os.path.join(os.path.dirname('.'),
                                            "frequency_dictionary_en_82_765.txt")
             term_index = 0  # column of the term in the dictionary text file
             count_index = 1  # column of the term frequency in the dictionary text file
@@ -121,8 +84,8 @@ def read_files(tarfname):
             return token
 
         def __call__(self, sentence):
+            return [self.lemma.lemmatize(self.corrector(t.lower()), 'n') for t in word_tokenize(sentence)]
             # return [self.lemma.lemmatize(self.corrector(t.lower()), 'n') for t in word_tokenize(sentence)]
-            return [self.lemma.lemmatize(t.lower(), 'n') for t in word_tokenize(sentence)]
             # return [self.lemma.lemmatize(t, 'v') for t in s]
             # return [self.lemmatize(self.corrector(t.lower()), tag) for t, tag in pos_tag(word_tokenize(sentence))]    
             # return [self.wnl.stem(t) for t in word_tokenize(articles)] 
@@ -136,22 +99,122 @@ def read_files(tarfname):
     - ngram:
         introduce more features, and capture relations between words
 
-    """  
+    """
+
+    tokenizer = LemmaTokenizer()
+    dataX_corr = []
+    for sentence in dataX:
+        # dataX_corr.append(' '.join(tokenizer(sentence)))
+        dataX_corr.append(tokenizer(sentence))
+
+    return dataX_corr
+
+
+def similarity_replace(data_corr, sentiment):
+
+    from gensim.models import Word2Vec
+    model = Word2Vec.load("word2vec.model")
+    for i, tokens in enumerate(data_corr):
+        for j, token in enumerate(tokens):
+            if token not in sentiment.count_vect.vocabulary_:
+                if token in model.wv.vocab:
+                    # print(token)
+                    simi_tokens, _ = zip(*model.most_similar(token, topn=20))
+                    # print(simi_tokens)
+                    for simi_token in simi_tokens:
+                        if simi_token in sentiment.count_vect.vocabulary_:
+                            # print(simi_token)
+                            data_corr[i][j] = simi_token
+                            break
+
+
+def read_files(tarfname):
+    """Read the training and development data from the sentiment tar file.
+    The returned object contains various fields that store sentiment data, such as:
+
+    train_data,dev_data: array of documents (array of words)
+    train_fnames,dev_fnames: list of filenames of the doccuments (same length as data)
+    train_labels,dev_labels: the true string label for each document (same length as data)
+
+    The data is also preprocessed for use with scikit-learn, as:
+
+    count_vec: CountVectorizer used to process the data (for reapplication on new data)
+    trainX,devX: array of vectors representing Bags of Words, i.e. documents processed through the vectorizer
+    le: LabelEncoder, i.e. a mapper from string labels to ints (stored for reapplication)
+    target_labels: List of labels (same order as used in le)
+    trainy,devy: array of int labels, one for each document
+    """
+    import tarfile
+    tar = tarfile.open(tarfname, "r:gz")
+    trainname = "train.tsv"
+    devname = "dev.tsv"
+    for member in tar.getmembers():
+        if 'train.tsv' in member.name:
+            trainname = member.name
+        elif 'dev.tsv' in member.name:
+            devname = member.name
+            
+            
+    class Data: pass
+    sentiment = Data()
+    print("-- train data")
+    sentiment.train_data, sentiment.train_labels = read_tsv(tar,trainname)
+    print(len(sentiment.train_data))
+
+    print("-- dev data")
+    sentiment.dev_data, sentiment.dev_labels = read_tsv(tar, devname)
+    print(len(sentiment.dev_data))
+    print("-- transforming data and labels")
+
+
+    # preprocessing
+    sentiment.train_data_corr = lemmatize_spelling(sentiment.train_data)
+    sentiment.dev_data_corr = lemmatize_spelling(sentiment.dev_data)
+ 
     # from sklearn.feature_extraction.text import CountVectorizer
     # sentiment.count_vect = CountVectorizer(ngram_range=(1,2))
     from sklearn.feature_extraction.text import TfidfVectorizer
     # todo - better if ignore numbers?
     # caution - token_pattern will be overriden by tokenizer
+    """
+    no norm
+    sublinear tf - huge gain
+    """
     sentiment.count_vect = TfidfVectorizer(ngram_range=(1,3),
                                            norm=None,
                                            # token_pattern=r"(?u)\b[a-zA-Z]+[\'\!\*]*\b",
                                            # token_pattern=r"(?u)\b\w+[\'\!\*]*\w*\b",
                                            sublinear_tf=True,
                                            stop_words=[],
-                                           tokenizer=LemmaTokenizer())
-    sentiment.trainX = sentiment.count_vect.fit_transform(sentiment.train_data)
+                                           lowercase=False,
+                                           tokenizer=lambda l: l)#LemmaTokenizer())
+    """
+    something is not right after separating tokenization and ngram processings
+    put it aside for a moment
+    """
+    
+    sentiment.trainX = sentiment.count_vect.fit_transform(sentiment.train_data_corr)
+
+    similarity_replace(sentiment.dev_data_corr, sentiment)
+
+    # from gensim.models import Word2Vec
+    # model = Word2Vec.load("word2vec.model")
+    # for i, tokens in enumerate(sentiment.dev_data_corr):
+    #     for j, token in enumerate(tokens):
+    #         if token not in sentiment.count_vect.vocabulary_:
+    #             if token in model.wv.vocab:
+    #                 # print(token)
+    #                 simi_tokens, _ = zip(*model.most_similar(token, topn=20))
+    #                 # print(simi_tokens)
+    #                 for simi_token in simi_tokens:
+    #                     if simi_token in sentiment.count_vect.vocabulary_:
+    #                         # print(simi_token)
+    #                         sentiment.dev_data_corr[i][j] = simi_token
+    #                         break
+
     # print(type(sentiment.trainX))
-    sentiment.devX = sentiment.count_vect.transform(sentiment.dev_data)
+    sentiment.devX = sentiment.count_vect.transform(sentiment.dev_data_corr)
+
     from sklearn import preprocessing
     sentiment.le = preprocessing.LabelEncoder()
     sentiment.le.fit(sentiment.train_labels)
@@ -161,8 +224,6 @@ def read_files(tarfname):
     tar.close()
     return sentiment
 
-def preprocessing():
-    pass
 
 def read_unlabeled(tarfname, sentiment):
     """Reads the unlabeled data.
@@ -190,9 +251,11 @@ def read_unlabeled(tarfname, sentiment):
         line = line.decode("utf-8")
         text = line.strip()
         unlabeled.data.append(text)
-        
+    
+    unlabeled.data_corr = lemmatize_spelling(unlabeled.data)
+    similarity_replace(unlabeled.data_corr, sentiment)
             
-    unlabeled.X = sentiment.count_vect.transform(unlabeled.data)
+    unlabeled.X = sentiment.count_vect.transform(unlabeled.data_corr)
     print(unlabeled.X.shape)
     tar.close()
     return unlabeled
@@ -269,7 +332,7 @@ def write_basic_kaggle_file(tsvfile, outfname):
 
 if __name__ == "__main__":
     print("Reading data")
-    tarfname = "../data/sentiment.tar.gz"
+    tarfname = "data/sentiment.tar.gz"
     sentiment = read_files(tarfname)
     print("\nTraining classifier")
     import classify
@@ -279,10 +342,10 @@ if __name__ == "__main__":
     classify.evaluate(sentiment.devX, sentiment.devy, cls, 'dev')
 
 
-    # print("\nReading unlabeled data")
-    # unlabeled = read_unlabeled(tarfname, sentiment)
-    # print("Writing predictions to a file")
-    # write_pred_kaggle_file(unlabeled, cls, "data/sentiment-pred.csv", sentiment)
+    print("\nReading unlabeled data")
+    unlabeled = read_unlabeled(tarfname, sentiment)
+    print("Writing predictions to a file")
+    write_pred_kaggle_file(unlabeled, cls, "data/sentiment-pred.csv", sentiment)
 
     #write_basic_kaggle_file("data/sentiment-unlabeled.tsv", "data/sentiment-basic.csv")
 
